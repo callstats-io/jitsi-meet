@@ -42,6 +42,7 @@ function TraceablePeerConnection(ice_config, constraints) {
     };
     this.onicecandidate = null;
     this.peerconnection.onicecandidate = function (event) {
+        // on new ice candidate
         self.trace('onicecandidate', JSON.stringify(event.candidate, null, ' '));
         if (self.onicecandidate !== null) {
             self.onicecandidate(event);
@@ -63,6 +64,7 @@ function TraceablePeerConnection(ice_config, constraints) {
     };
     this.onsignalingstatechange = null;
     this.peerconnection.onsignalingstatechange = function (event) {
+        // on signalling state
         self.trace('onsignalingstatechange', self.signalingState);
         if (self.onsignalingstatechange !== null) {
             self.onsignalingstatechange(event);
@@ -70,6 +72,7 @@ function TraceablePeerConnection(ice_config, constraints) {
     };
     this.oniceconnectionstatechange = null;
     this.peerconnection.oniceconnectionstatechange = function (event) {
+        // on ice connection state change
         self.trace('oniceconnectionstatechange', self.iceConnectionState);
         if (self.oniceconnectionstatechange !== null) {
             self.oniceconnectionstatechange(event);
@@ -77,6 +80,7 @@ function TraceablePeerConnection(ice_config, constraints) {
     };
     this.onnegotiationneeded = null;
     this.peerconnection.onnegotiationneeded = function (event) {
+        // onNN
         self.trace('onnegotiationneeded');
         if (self.onnegotiationneeded !== null) {
             self.onnegotiationneeded(event);
