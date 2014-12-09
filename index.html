@@ -2,13 +2,13 @@
   <head>
     <!--#include virtual="title.html" -->
     <link rel="icon" type="image/png" href="/images/favicon.ico"/>
-    <meta property="og:title" content="Jitsi Meet"/>
-    <meta property="og:image" content="/images/jitsilogo.png"/>
+    <meta property="og:title" content="Jitsi Meet--callstats.io"/>
+    <meta property="og:image" content="/images/"/>
     <meta property="og:description" content="Join a WebRTC video conference powered by the Jitsi Videobridge"/>
     <meta description="Join a WebRTC video conference powered by the Jitsi Videobridge"/>
-    <meta itemprop="name" content="Jitsi Meet"/>
+    <meta itemprop="name" content="Jitsi Meet--callstats.io"/>
     <meta itemprop="description" content="Join a WebRTC video conference powered by the Jitsi Videobridge"/>
-    <meta itemprop="image" content="/images/jitsilogo.png"/>
+    <meta itemprop="image" content="/images/csiologo.png"/>
     <script src="libs/jquery-2.1.1.min.js"></script>
     <script src="config.js?v=5"></script><!-- adapt to your needs, i.e. set hosts and bosh path -->
     <script src="simulcast.js?v=7"></script><!-- simulcast handling -->
@@ -77,7 +77,8 @@
     <!--
         Link used for inline installation of chrome desktop streaming extension,
         is updated automatically from the code with the value defined in config.js -->
-    <link rel="chrome-webstore-item" href="https://chrome.google.com/webstore/detail/diibjkoicjeejcmhdnailmkgecihlobk">
+<!--    <link rel="chrome-webstore-item" href="https://chrome.google.com/webstore/detail/diibjkoicjeejcmhdnailmkgecihlobk">
+-->
     <script src="libs/jquery-impromptu.js"></script>
     <script src="libs/jquery.autosize.js"></script>
     <script src="libs/prezi_player.js?v=2"></script>
@@ -91,8 +92,7 @@
             <a target="_new">
                 <div class="watermark rightwatermark"></div>
             </a>
-            <a class="poweredby" href="http://jitsi.org" target="_new" >powered by jitsi.org</a>
-
+            <a class="analytics poweredby" href="http://www.callstats.io" target="_new" >calstats.io</a>
             <div id="enter_room_container">
                     <div id="enter_room_form" >
                         <div id="domain_name"></div>
@@ -110,7 +110,8 @@
             <div id="header_text"></div>
         </div>
         <div id="welcome_page_main">
-            <div id="features">
+            <!--
+	    <div id="features">
                 <div class="feature_row">
                     <div class="feature_holder">
                         <div class="feature_icon">Simple to use</div>
@@ -163,7 +164,7 @@
                         </div>
                     </div>
                 </div>
-            </div>
+            </div>-->
         </div>
     </div>
     <div id="videoconference_page">
@@ -252,7 +253,7 @@
                 <div id="etherpad"></div>
                 <a target="_new"><div class="watermark leftwatermark"></div></a>
                 <a target="_new"><div class="watermark rightwatermark"></div></a>
-                <a class="poweredby" href="http://jitsi.org" target="_new" >powered by jitsi.org</a>
+                <a class="analytics poweredby" href="http://callstats.io" target="_new" >powered by callstats.io</a>
                 <video id="largeVideo" autoplay oncontextmenu="return false;"></video>
             </div>
             <div id="remoteVideos">
