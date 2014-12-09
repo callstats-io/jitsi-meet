@@ -51,12 +51,10 @@ var Util = (function (my) {
      * Returns the available video width.
      */
     my.getAvailableVideoWidth = function () {
-        var chatspaceWidth
-            = (Chat.isVisible() || ContactList.isVisible())
-                ? $('#chatspace').width()
-                : 0;
+        var rightPanelWidth
+            = PanelToggler.isVisible() ? PanelToggler.getPanelSize()[0] : 0;
 
-        return window.innerWidth - chatspaceWidth;
+        return window.innerWidth - rightPanelWidth;
     };
 
     my.imageToGrayScale = function (canvas) {
@@ -82,6 +80,21 @@ var Util = (function (my) {
         element.setAttribute("data-placement", position);
         element.setAttribute("data-html", true);
         element.setAttribute("data-container", "body");
+    };
+
+    my.createExpBackoffTimer = function (step) {
+        var count = 1;
+        return function (reset) {
+            // Reset call
+            if (reset) {
+                count = 1;
+                return;
+            }
+            // Calculate next timeout
+            var timeout = Math.pow(2, count - 1);
+            count += 1;
+            return timeout * step;
+        };
     };
 
     return my;

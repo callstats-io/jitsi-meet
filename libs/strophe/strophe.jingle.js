@@ -30,8 +30,12 @@ Strophe.addConnectionPlugin('jingle', {
             // this is dealt with by SDP O/A so we don't need to annouce this
             //this.connection.disco.addFeature('urn:xmpp:jingle:apps:rtp:rtcp-fb:0'); // XEP-0293
             //this.connection.disco.addFeature('urn:xmpp:jingle:apps:rtp:rtp-hdrext:0'); // XEP-0294
-            this.connection.disco.addFeature('urn:ietf:rfc:5761'); // rtcp-mux
-            //this.connection.disco.addFeature('urn:ietf:rfc:5888'); // a=group, e.g. bundle
+            if (config.useRtcpMux) {
+                this.connection.disco.addFeature('urn:ietf:rfc:5761'); // rtcp-mux
+            }
+            if (config.useBundle) {
+                this.connection.disco.addFeature('urn:ietf:rfc:5888'); // a=group, e.g. bundle
+            }
             //this.connection.disco.addFeature('urn:ietf:rfc:5576'); // a=ssrc
         }
         this.connection.addHandler(this.onJingle.bind(this), 'urn:xmpp:jingle:1', 'iq', 'set', null, null);
@@ -84,7 +88,9 @@ Strophe.addConnectionPlugin('jingle', {
             case 'session-initiate':
                 sess = new JingleSession($(iq).attr('to'), $(iq).find('jingle').attr('sid'), this.connection);
                 // configure session
-                if (this.localAudio) {
+
+                //in firefox we have only one stream object
+                if (this.localAudio != this.localVideo) {
                     sess.localStreams.push(this.localAudio);
                 }
                 if (this.localVideo) {
@@ -169,7 +175,9 @@ Strophe.addConnectionPlugin('jingle', {
             Math.random().toString(36).substr(2, 12), // random string
             this.connection);
         // configure session
-        if (this.localAudio) {
+
+        //in firefox we have only one stream
+        if (this.localAudio != this.localVideo) {
             sess.localStreams.push(this.localAudio);
         }
         if (this.localVideo) {

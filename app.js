@@ -2,17 +2,20 @@
 /* application specific logic */
 var connection = null;
 var authenticatedUser = false;
-var focus = null;
 var activecall = null;
 var RTC = null;
 var nickname = null;
 var sharedKey = '';
-var recordingToken ='';
+var focusJid = null;
 var roomUrl = null;
 var roomName = null;
 var ssrc2jid = {};
-var mediaStreams = [];
+var mediaStreams = {};
 var bridgeIsDown = false;
+//TODO: this array must be removed when firefox implement multistream support
+var notReceivedSSRCs = [];
+
+var jid2Ssrc = {};
 
 /**
  * The stats collector that process stats data and triggers updates to app.js.
@@ -31,13 +34,22 @@ var localStatsCollector = null;
  * FIXME: remove those maps
  */
 var ssrc2videoType = {};
-var videoSrcToSsrc = {};
 /**
  * Currently focused video "src"(displayed in large video).
  * @type {String}
  */
-var focusedVideoSrc = null;
+var focusedVideoInfo = null;
 var mutedAudios = {};
+/**
+ * Remembers if we were muted by the focus.
+ * @type {boolean}
+ */
+var forceMuted = false;
+/**
+ * Indicates if we have muted our audio before the conference has started.
+ * @type {boolean}
+ */
+var preMuted = false;
 
 var localVideoSrc = null;
 var flipXLocalVideo = true;
@@ -65,26 +77,43 @@ function init() {
     if (RTC === null) {
         window.location.href = 'webrtcrequired.html';
         return;
-    } else if (RTC.browser !== 'chrome') {
+    } else if (RTC.browser !== 'chrome' &&
+        config.enableFirefoxSupport !== true) {
         window.location.href = 'chromeonly.html';
         return;
     }
 
     obtainAudioAndVideoPermissions(function (stream) {
-        var audioStream = new webkitMediaStream();
-        var videoStream = new webkitMediaStream();
-        var audioTracks = stream.getAudioTracks();
-        var videoTracks = stream.getVideoTracks();
-        for (var i = 0; i < audioTracks.length; i++) {
-            audioStream.addTrack(audioTracks[i]);
-        }
-        VideoLayout.changeLocalAudio(audioStream);
-        startLocalRtpStatsCollector(audioStream);
+        var audioStream, videoStream;
+        if(window.webkitMediaStream)
+        {
+            var audioStream = new webkitMediaStream();
+            var videoStream = new webkitMediaStream();
+            var audioTracks = stream.getAudioTracks();
+            var videoTracks = stream.getVideoTracks();
+            for (var i = 0; i < audioTracks.length; i++) {
+                audioStream.addTrack(audioTracks[i]);
+            }
 
-        for (i = 0; i < videoTracks.length; i++) {
-            videoStream.addTrack(videoTracks[i]);
+            for (i = 0; i < videoTracks.length; i++) {
+                videoStream.addTrack(videoTracks[i]);
+            }
+            VideoLayout.changeLocalAudio(audioStream);
+            startLocalRtpStatsCollector(audioStream);
+
+
+            VideoLayout.changeLocalVideo(videoStream, true);
         }
-        VideoLayout.changeLocalVideo(videoStream, true);
+        else
+        {
+            VideoLayout.changeLocalStream(stream);
+            startLocalRtpStatsCollector(stream);
+
+        }
+
+
+
+
         maybeDoJoin();
     });
 
@@ -99,9 +128,16 @@ function connect(jid, password) {
         localVideo = connection.jingle.localVideo;
     }
     connection = new Strophe.Connection(document.getElementById('boshURL').value || config.bosh || '/http-bind');
-
-    if (nickname) {
-        connection.emuc.addDisplayNameToPresence(nickname);
+    
+    var email = SettingsMenu.getEmail();
+    var displayName = SettingsMenu.getDisplayName();
+    if(email) {
+        connection.emuc.addEmailToPresence(email);
+    } else {
+        connection.emuc.addUserIdToPresence(SettingsMenu.getUID());
+    }
+    if(displayName) {
+        connection.emuc.addDisplayNameToPresence(displayName);
     }
 
     if (connection.disco) {
@@ -154,24 +190,33 @@ function connect(jid, password) {
  */
 function obtainAudioAndVideoPermissions(callback) {
     // Get AV
+    var cb = function (stream) {
+        console.log('got', stream, stream.getAudioTracks().length, stream.getVideoTracks().length);
+        callback(stream);
+        trackUsage('localMedia', {
+            audio: stream.getAudioTracks().length,
+            video: stream.getVideoTracks().length
+        });
+    }
     getUserMediaWithConstraints(
         ['audio', 'video'],
-        function (avStream) {
-            callback(avStream);
-            trackUsage('localMedia', {
-                audio: avStream.getAudioTracks().length,
-                video: avStream.getVideoTracks().length
-            });
-        },
+        cb,
         function (error) {
-            console.error('failed to obtain audio/video stream - stop', error);
-            trackUsage('localMediaError', {
-                media: error.media || 'video',
-                name : error.name
-            });
-            messageHandler.showError("Error",
-                "Failed to obtain permissions to use the local microphone" +
-                    "and/or camera.");
+            console.error('failed to obtain audio/video stream - trying audio only', error);
+            getUserMediaWithConstraints(
+                ['audio'],
+                cb,
+                function (error) {
+                    console.error('failed to obtain audio/video stream - stop', error);
+                    trackUsage('localMediaError', {
+                        media: error.media || 'video',
+                        name : error.name
+                    });
+                    messageHandler.showError("Error",
+                        "Failed to obtain permissions to use the local microphone" +
+                            "and/or camera.");
+                }
+            );
         },
         config.resolution || '360');
 }
@@ -183,11 +228,9 @@ function maybeDoJoin() {
     }
 }
 
-
-function doJoin() {
+function generateRoomName() {
     var roomnode = null;
     var path = window.location.pathname;
-    var roomjid;
 
     // determinde the room node from the url
     // TODO: just the roomnode or the whole bare jid?
@@ -215,7 +258,20 @@ function doJoin() {
     }
 
     roomName = roomnode + '@' + config.hosts.muc;
+}
 
+function doJoin() {
+    if (!roomName) {
+        generateRoomName();
+    }
+
+    Moderator.allocateConferenceFocus(
+        roomName, doJoinAfterFocus);
+}
+
+function doJoinAfterFocus() {
+
+    var roomjid;
     roomjid = roomName;
 
     if (config.useNicks) {
@@ -237,8 +293,7 @@ function doJoin() {
     connection.emuc.doJoin(roomjid);
 }
 
-function waitForRemoteVideo(selector, ssrc, stream) {
-
+function waitForRemoteVideo(selector, ssrc, stream, jid) {
     // XXX(gp) so, every call to this function is *always* preceded by a call
     // to the RTC.attachMediaStream() function but that call is *not* followed
     // by an update to the videoSrcToSsrc map!
@@ -270,17 +325,17 @@ function waitForRemoteVideo(selector, ssrc, stream) {
 
         // FIXME: add a class that will associate peer Jid, video.src, it's ssrc and video type
         //        in order to get rid of too many maps
-        if (ssrc && selector.attr('src')) {
-            videoSrcToSsrc[selector.attr('src')] = ssrc;
+        if (ssrc && jid) {
+            jid2Ssrc[Strophe.getResourceFromJid(jid)] = ssrc;
         } else {
-            console.warn("No ssrc given for video", selector);
-            messageHandler.showError('Warning', 'No ssrc was given for the video.');
+            console.warn("No ssrc given for jid", jid);
+//            messageHandler.showError('Warning', 'No ssrc was given for the video.');
         }
 
         $(document).trigger('videoactive.jingle', [selector]);
     } else {
         setTimeout(function () {
-            waitForRemoteVideo(selector, ssrc, stream);
+            waitForRemoteVideo(selector, ssrc, stream, jid);
             }, 250);
     }
 }
@@ -293,16 +348,19 @@ function waitForPresence(data, sid) {
     var sess = connection.jingle.sessions[sid];
 
     var thessrc;
+
     // look up an associated JID for a stream id
-    if (data.stream.id.indexOf('mixedmslabel') === -1) {
+    if (data.stream.id && data.stream.id.indexOf('mixedmslabel') === -1) {
         // look only at a=ssrc: and _not_ at a=ssrc-group: lines
+
         var ssrclines
             = SDPUtil.find_lines(sess.peerconnection.remoteDescription.sdp, 'a=ssrc:');
         ssrclines = ssrclines.filter(function (line) {
             // NOTE(gp) previously we filtered on the mslabel, but that property
             // is not always present.
             // return line.indexOf('mslabel:' + data.stream.label) !== -1;
-            return line.indexOf('msid:' + data.stream.id) !== -1;
+
+            return ((line.indexOf('msid:' + data.stream.id) !== -1));
         });
         if (ssrclines.length) {
             thessrc = ssrclines[0].substring(7).split(' ')[0];
@@ -332,10 +390,36 @@ function waitForPresence(data, sid) {
         }
     }
 
+    //TODO: this code should be removed when firefox implement multistream support
+    if(RTC.browser == "firefox")
+    {
+        if((notReceivedSSRCs.length == 0) ||
+            !ssrc2jid[notReceivedSSRCs[notReceivedSSRCs.length - 1]])
+        {
+            // TODO(gp) limit wait duration to 1 sec.
+            setTimeout(function(d, s) {
+                return function() {
+                    waitForPresence(d, s);
+                }
+            }(data, sid), 250);
+            return;
+        }
+
+        thessrc = notReceivedSSRCs.pop();
+        if (ssrc2jid[thessrc]) {
+            data.peerjid = ssrc2jid[thessrc];
+        }
+    }
+
     // NOTE(gp) now that we have simulcast, a media stream can have more than 1
     // ssrc. We should probably take that into account in our MediaStream
     // wrapper.
-    mediaStreams.push(new MediaStream(data, sid, thessrc));
+    var mediaStream = new MediaStream(data, sid, thessrc);
+    var jid = data.peerjid || connection.emuc.myroomjid;
+    if(!mediaStreams[jid]) {
+        mediaStreams[jid] = {};
+    }
+    mediaStreams[jid][mediaStream.type] = mediaStream;
 
     var container;
     var remotes = document.getElementById('remoteVideos');
@@ -346,7 +430,10 @@ function waitForPresence(data, sid) {
         container  = document.getElementById(
                 'participant_' + Strophe.getResourceFromJid(data.peerjid));
     } else {
-        if (data.stream.id !== 'mixedmslabel') {
+        if (data.stream.id !== 'mixedmslabel'
+            // FIXME: default stream is added always with new focus
+            // (to be investigated)
+            && data.stream.id !== 'default') {
             console.error('can not associate stream',
                 data.stream.id,
                 'with a participant');
@@ -381,25 +468,6 @@ function waitForPresence(data, sid) {
             sendKeyframe(sess.peerconnection);
         }, 3000);
     }
-}
-
-/**
- * Returns the JID of the user to whom given <tt>videoSrc</tt> belongs.
- * @param videoSrc the video "src" identifier.
- * @returns {null | String} the JID of the user to whom given <tt>videoSrc</tt>
- *                   belongs.
- */
-function getJidFromVideoSrc(videoSrc)
-{
-    if (videoSrc === localVideoSrc)
-        return connection.emuc.myroomjid;
-
-    var ssrc = videoSrcToSsrc[videoSrc];
-    if (!ssrc)
-    {
-        return null;
-    }
-    return ssrc2jid[ssrc];
 }
 
 // an attempt to work around https://github.com/jitsi/jitmeet/issues/32
@@ -593,16 +661,6 @@ $(document).bind('conferenceCreated.jingle', function (event, focus)
     }
 });
 
-$(document).bind('callterminated.jingle', function (event, sid, jid, reason) {
-    // Leave the room if my call has been remotely terminated.
-    if (connection.emuc.joined && focus == null && reason === 'kick') {
-        sessionTerminated = true;
-        connection.emuc.doLeave();
-        messageHandler.openMessageDialog("Session Terminated",
-                            "Ouch! You have been kicked out of the meet!");
-    }
-});
-
 $(document).bind('setLocalDescription.jingle', function (event, sid) {
     // put our ssrcs into presence so other clients can identify our stream
     var sess = connection.jingle.sessions[sid];
@@ -610,15 +668,27 @@ $(document).bind('setLocalDescription.jingle', function (event, sid) {
     var media = simulcast.parseMedia(sess.peerconnection.localDescription);
     media.forEach(function (media) {
 
-        // TODO(gp) maybe exclude FID streams?
-        Object.keys(media.sources).forEach(function(ssrc) {
+        if(Object.keys(media.sources).length > 0) {
+            // TODO(gp) maybe exclude FID streams?
+            Object.keys(media.sources).forEach(function (ssrc) {
+                newssrcs.push({
+                    'ssrc': ssrc,
+                    'type': media.type,
+                    'direction': media.direction
+                });
+            });
+        }
+        else if(sess.localStreamsSSRC && sess.localStreamsSSRC[media.type])
+        {
             newssrcs.push({
-                'ssrc': ssrc,
+                'ssrc': sess.localStreamsSSRC[media.type],
                 'type': media.type,
                 'direction': media.direction
             });
-        });
+        }
+
     });
+
     console.log('new ssrcs', newssrcs);
 
     // Have to clear presence map to get rid of removed streams
@@ -651,20 +721,22 @@ $(document).bind('iceconnectionstatechange.jingle', function (event, sid, sessio
             var metadata = {};
             metadata.setupTime = (new Date()).getTime() - session.timeChecking;
             session.peerconnection.getStats(function (res) {
-                res.result().forEach(function (report) {
-                    if (report.type == 'googCandidatePair' && report.stat('googActiveConnection') == 'true') {
-                        metadata.localCandidateType = report.stat('googLocalCandidateType');
-                        metadata.remoteCandidateType = report.stat('googRemoteCandidateType');
+                if(res && res.result) {
+                    res.result().forEach(function (report) {
+                        if (report.type == 'googCandidatePair' && report.stat('googActiveConnection') == 'true') {
+                            metadata.localCandidateType = report.stat('googLocalCandidateType');
+                            metadata.remoteCandidateType = report.stat('googRemoteCandidateType');
 
-                        // log pair as well so we can get nice pie charts 
-                        metadata.candidatePair = report.stat('googLocalCandidateType') + ';' + report.stat('googRemoteCandidateType');
+                            // log pair as well so we can get nice pie charts
+                            metadata.candidatePair = report.stat('googLocalCandidateType') + ';' + report.stat('googRemoteCandidateType');
 
-                        if (report.stat('googRemoteAddress').indexOf('[') === 0) {
-                            metadata.ipv6 = true;
+                            if (report.stat('googRemoteAddress').indexOf('[') === 0) {
+                                metadata.ipv6 = true;
+                            }
                         }
-                    }
-                });
-                trackUsage('iceConnected', metadata);
+                    });
+                    trackUsage('iceConnected', metadata);
+                }
             });
         }
         break;
@@ -677,29 +749,8 @@ $(document).bind('joined.muc', function (event, jid, info) {
         document.createTextNode(Strophe.getResourceFromJid(jid) + ' (me)')
     );
 
-    if (Object.keys(connection.emuc.members).length < 1) {
-        focus = new ColibriFocus(connection, config.hosts.bridge);
-        if (nickname !== null) {
-            focus.setEndpointDisplayName(connection.emuc.myroomjid,
-                                         nickname);
-        }
-        Toolbar.showSipCallButton(true);
-        Toolbar.showRecordingButton(false);
-    }
-
-    if (!focus)
-    {
-        Toolbar.showSipCallButton(false);
-    }
-
-    if (focus && config.etherpad_base) {
-        Etherpad.init();
-    }
-
-    VideoLayout.showFocusIndicator();
-
     // Add myself to the contact list.
-    ContactList.addContact(jid);
+    ContactList.addContact(jid, SettingsMenu.getEmail() || SettingsMenu.getUID());
 
     // Once we've joined the muc show the toolbar
     ToolbarToggler.showToolbar();
@@ -714,21 +765,32 @@ $(document).bind('joined.muc', function (event, jid, info) {
 
 $(document).bind('entered.muc', function (event, jid, info, pres) {
     console.log('entered', jid, info);
+    if (info.isFocus)
+    {
+        focusJid = jid;
+        console.info("Ignore focus: " + jid +", real JID: " + info.jid);
+        messageHandler.notify('Focus', 'connected', 'connected');
+        return;
+    }
+
     messageHandler.notify(info.displayName || 'Somebody',
         'connected',
         'connected');
 
-    console.log('is focus? ' + (focus ? 'true' : 'false'));
-
     // Add Peer's container
-    VideoLayout.ensurePeerContainerExists(jid);
+    var id = $(pres).find('>userID').text();
+    var email = $(pres).find('>email');
+    if(email.length > 0) {
+        id = email.text();
+    }
+    VideoLayout.ensurePeerContainerExists(jid,id);
 
     if(APIConnector.isEnabled() && APIConnector.isEventEnabled("participantJoined"))
     {
         APIConnector.triggerEvent("participantJoined",{jid: jid});
     }
 
-    if (focus !== null) {
+    /*if (focus !== null) {
         // FIXME: this should prepare the video
         if (focus.confid === null) {
             console.log('make new conference with', jid);
@@ -743,7 +805,7 @@ $(document).bind('entered.muc', function (event, jid, info, pres) {
             console.log('invite', jid, 'into conference');
             focus.addNewParticipant(jid);
         }
-    }
+    }*/
 });
 
 $(document).bind('left.muc', function (event, jid) {
@@ -760,6 +822,7 @@ $(document).bind('left.muc', function (event, jid) {
         var container = document.getElementById(
                 'participant_' + Strophe.getResourceFromJid(jid));
         if (container) {
+            ContactList.removeContact(jid);
             VideoLayout.removeConnectionIndicator(jid);
             // hide here, wait for video to close before removing
             $(container).hide();
@@ -772,53 +835,17 @@ $(document).bind('left.muc', function (event, jid) {
         APIConnector.triggerEvent("participantLeft",{jid: jid});
     }
 
+    delete jid2Ssrc[jid];
+
     // Unlock large video
-    if (focusedVideoSrc)
+    if (focusedVideoInfo && focusedVideoInfo.jid === jid)
     {
-        if (getJidFromVideoSrc(focusedVideoSrc) === jid)
-        {
-            console.info("Focused video owner has left the conference");
-            focusedVideoSrc = null;
-        }
+        console.info("Focused video owner has left the conference");
+        focusedVideoInfo = null;
     }
 
     connection.jingle.terminateByJid(jid);
 
-    if (focus == null
-            // I shouldn't be the one that left to enter here.
-            && jid !== connection.emuc.myroomjid
-            && connection.emuc.myroomjid === connection.emuc.list_members[0]
-            // If our session has been terminated for some reason
-            // (kicked, hangup), don't try to become the focus
-            && !sessionTerminated) {
-        console.log('welcome to our new focus... myself');
-        focus = new ColibriFocus(connection, config.hosts.bridge);
-        if (nickname !== null) {
-            focus.setEndpointDisplayName(connection.emuc.myroomjid,
-                                         nickname);
-        }
-
-        Toolbar.showSipCallButton(true);
-
-        if (Object.keys(connection.emuc.members).length > 0) {
-            focus.makeConference(Object.keys(connection.emuc.members));
-            Toolbar.showRecordingButton(true);
-        }
-        $(document).trigger('focusechanged.muc', [focus]);
-    }
-    else if (focus && Object.keys(connection.emuc.members).length === 0) {
-        console.log('everyone left');
-        // FIXME: closing the connection is a hack to avoid some
-        // problems with reinit
-        disposeConference();
-        focus = new ColibriFocus(connection, config.hosts.bridge);
-        if (nickname !== null) {
-            focus.setEndpointDisplayName(connection.emuc.myroomjid,
-                                         nickname);
-        }
-        Toolbar.showSipCallButton(true);
-        Toolbar.showRecordingButton(false);
-    }
     if (connection.emuc.getPrezi(jid)) {
         $(document).trigger('presentationremoved.muc',
                             [jid, connection.emuc.getPrezi(jid)]);
@@ -827,12 +854,22 @@ $(document).bind('left.muc', function (event, jid) {
 
 $(document).bind('presence.muc', function (event, jid, info, pres) {
 
+    //check if the video bridge is available
+    if($(pres).find(">bridgeIsDown").length > 0 && !bridgeIsDown) {
+        bridgeIsDown = true;
+        messageHandler.showError("Error",
+            "Jitsi Videobridge is currently unavailable. Please try again later!");
+    }
+
+    if (info.isFocus)
+    {
+        return;
+    }
+
     // Remove old ssrcs coming from the jid
     Object.keys(ssrc2jid).forEach(function (ssrc) {
         if (ssrc2jid[ssrc] == jid) {
             delete ssrc2jid[ssrc];
-        }
-        if (ssrc2videoType[ssrc] == jid) {
             delete ssrc2videoType[ssrc];
         }
     });
@@ -841,6 +878,7 @@ $(document).bind('presence.muc', function (event, jid, info, pres) {
         //console.log(jid, 'assoc ssrc', ssrc.getAttribute('type'), ssrc.getAttribute('ssrc'));
         var ssrcV = ssrc.getAttribute('ssrc');
         ssrc2jid[ssrcV] = jid;
+        notReceivedSSRCs.push(ssrcV);
 
         var type = ssrc.getAttribute('type');
         ssrc2videoType[ssrcV] = type;
@@ -867,10 +905,9 @@ $(document).bind('presence.muc', function (event, jid, info, pres) {
     if (displayName && displayName.length > 0)
         $(document).trigger('displaynamechanged',
                             [jid, displayName]);
-
-    if (focus !== null && info.displayName !== null) {
+    /*if (focus !== null && info.displayName !== null) {
         focus.setEndpointDisplayName(jid, info.displayName);
-    }
+    }*/
 
     //check if the video bridge is available
     if($(pres).find(">bridgeIsDown").length > 0 && !bridgeIsDown) {
@@ -879,6 +916,13 @@ $(document).bind('presence.muc', function (event, jid, info, pres) {
             "Jitsi Videobridge is currently unavailable. Please try again later!");
     }
 
+    var id = $(pres).find('>userID').text();
+    var email = $(pres).find('>email');
+    if(email.length > 0) {
+        id = email.text();
+    }
+    Avatar.setUserAvatar(jid, id);
+
 });
 
 $(document).bind('presence.status.muc', function (event, jid, info, pres) {
@@ -886,6 +930,17 @@ $(document).bind('presence.status.muc', function (event, jid, info, pres) {
     VideoLayout.setPresenceStatus(
         'participant_' + Strophe.getResourceFromJid(jid), info.status);
 
+});
+
+$(document).bind('kicked.muc', function (event, jid) {
+    console.info(jid + " has been kicked from MUC!");
+    if (connection.emuc.myroomjid === jid) {
+        sessionTerminated = true;
+        disposeConference(false);
+        connection.emuc.doLeave();
+        messageHandler.openMessageDialog("Session Terminated",
+            "Ouch! You have been kicked out of the meet!");
+    }
 });
 
 $(document).bind('passwordrequired.muc', function (event, jid) {
@@ -946,16 +1001,20 @@ $(document).bind('passwordrequired.main', function (event) {
  * blob:https%3A//pawel.jitsi.net/9a46e0bd-131e-4d18-9c14-a9264e8db395
  * @returns {boolean}
  */
-function isVideoSrcDesktop(videoSrc) {
+function isVideoSrcDesktop(jid) {
     // FIXME: fix this mapping mess...
     // figure out if large video is desktop stream or just a camera
+
+    if(!jid)
+        return false;
     var isDesktop = false;
-    if (localVideoSrc === videoSrc) {
+    if (connection.emuc.myroomjid &&
+        Strophe.getResourceFromJid(connection.emuc.myroomjid) === jid) {
         // local video
         isDesktop = isUsingScreenStream;
     } else {
         // Do we have associations...
-        var videoSsrc = videoSrcToSsrc[videoSrc];
+        var videoSsrc = jid2Ssrc[jid];
         if (videoSsrc) {
             var videoType = ssrc2videoType[videoSsrc];
             if (videoType) {
@@ -965,14 +1024,14 @@ function isVideoSrcDesktop(videoSrc) {
                 console.error("No video type for ssrc: " + videoSsrc);
             }
         } else {
-            console.error("No ssrc for src: " + videoSrc);
+            console.error("No ssrc for jid: " + jid);
         }
     }
     return isDesktop;
 }
 
 function getConferenceHandler() {
-    return focus ? focus : activecall;
+    return activecall;
 }
 
 function toggleVideo() {
@@ -1002,9 +1061,29 @@ function toggleVideo() {
  * Mutes / unmutes audio for the local participant.
  */
 function toggleAudio() {
+    setAudioMuted(!isAudioMuted());
+}
+
+/**
+ * Sets muted audio state for the local participant.
+ */
+function setAudioMuted(mute) {
     if (!(connection && connection.jingle.localAudio)) {
+        preMuted = mute;
         // We still click the button.
         buttonClick("#mute", "icon-microphone icon-mic-disabled");
+        return;
+    }
+
+    if (forceMuted && !mute) {
+        console.info("Asking focus for unmute");
+        connection.moderate.setMute(connection.emuc.myroomjid, mute);
+        // FIXME: wait for result before resetting muted status
+        forceMuted = false;
+    }
+
+    if (mute == isAudioMuted()) {
+        // Nothing to do
         return;
     }
 
@@ -1013,17 +1092,14 @@ function toggleAudio() {
     // that we send presence just once.
     var localAudioTracks = connection.jingle.localAudio.getAudioTracks();
     if (localAudioTracks.length > 0) {
-        var audioEnabled = localAudioTracks[0].enabled;
-
         for (var idx = 0; idx < localAudioTracks.length; idx++) {
-            localAudioTracks[idx].enabled = !audioEnabled;
+            localAudioTracks[idx].enabled = !mute;
         }
-
-        // isMuted is the opposite of audioEnabled
-        connection.emuc.addAudioInfoToPresence(audioEnabled);
-        connection.emuc.sendPresence();
-        VideoLayout.showLocalAudioIndicator(audioEnabled);
     }
+    // isMuted is the opposite of audioEnabled
+    connection.emuc.addAudioInfoToPresence(mute);
+    connection.emuc.sendPresence();
+    VideoLayout.showLocalAudioIndicator(mute);
 
     buttonClick("#mute", "icon-microphone icon-mic-disabled");
 }
@@ -1044,51 +1120,7 @@ function isAudioMuted()
 
 // Starts or stops the recording for the conference.
 function toggleRecording() {
-    if (focus === null || focus.confid === null) {
-        console.log('non-focus, or conference not yet organized: not enabling recording');
-        return;
-    }
-
-    if (!recordingToken)
-    {
-        messageHandler.openTwoButtonDialog(null,
-            '<h2>Enter recording token</h2>' +
-                '<input id="recordingToken" type="text" placeholder="token" autofocus>',
-            false,
-            "Save",
-            function (e, v, m, f) {
-                if (v) {
-                    var token = document.getElementById('recordingToken');
-
-                    if (token.value) {
-                        setRecordingToken(Util.escapeHtml(token.value));
-                        toggleRecording();
-                    }
-                }
-            },
-            function (event) {
-                document.getElementById('recordingToken').focus();
-            }
-        );
-
-        return;
-    }
-
-    var oldState = focus.recordingEnabled;
-    Toolbar.toggleRecordingButtonState();
-    focus.setRecording(!oldState,
-                        recordingToken,
-                        function (state) {
-                            console.log("New recording state: ", state);
-                            if (state == oldState) //failed to change, reset the token because it might have been wrong
-                            {
-                                Toolbar.toggleRecordingButtonState();
-                                setRecordingToken(null);
-                            }
-                        }
-    );
-
-
+    Recording.toggleRecording();
 }
 
 /**
@@ -1306,6 +1338,8 @@ $(document).ready(function () {
         }
     });
 
+    Moderator.init();
+
     // Set the defaults for prompt dialogs.
     jQuery.prompt.setDefaults({persistent: false});
 
@@ -1333,6 +1367,8 @@ $(document).ready(function () {
             VideoLayout.positionLarge(currentVideoWidth, currentVideoHeight);
         });
 
+    document.getElementById('largeVideo').volume = 0;
+
     if (!$('#settings').is(':visible')) {
         console.log('init');
         init();
@@ -1358,15 +1394,20 @@ $(document).ready(function () {
         "showMethod": "fadeIn",
         "hideMethod": "fadeOut",
         "reposition": function() {
-            if(Chat.isVisible() || ContactList.isVisible()) {
-                $("#toast-container").addClass("toast-bottom-right-center");
+            if(PanelToggler.isVisible()) {
+                $("#toast-container").addClass("notification-bottom-right-center");
             } else {
-                $("#toast-container").removeClass("toast-bottom-right-center");
+                $("#toast-container").removeClass("notification-bottom-right-center");
             }
         },
         "newestOnTop": false
-    }
+    };
 
+    $('#settingsmenu>input').keyup(function(event){
+        if(event.keyCode === 13) {//enter
+            SettingsMenu.update();
+        }
+    })
 
 });
 
@@ -1403,10 +1444,10 @@ function disposeConference(onUnload) {
         // FIXME: probably removing streams is not required and close() should
         // be enough
         if (connection.jingle.localAudio) {
-            handler.peerconnection.removeStream(connection.jingle.localAudio);
+            handler.peerconnection.removeStream(connection.jingle.localAudio, onUnload);
         }
         if (connection.jingle.localVideo) {
-            handler.peerconnection.removeStream(connection.jingle.localVideo);
+            handler.peerconnection.removeStream(connection.jingle.localVideo, onUnload);
         }
         handler.peerconnection.close();
     }
@@ -1414,7 +1455,6 @@ function disposeConference(onUnload) {
     if(onUnload) {
         stopLocalRtpStatsCollector();
     }
-    focus = null;
     activecall = null;
 }
 
@@ -1481,10 +1521,6 @@ function setSharedKey(sKey) {
     sharedKey = sKey;
 }
 
-function setRecordingToken(token) {
-    recordingToken = token;
-}
-
 /**
  * Updates the room invite url.
  */
@@ -1504,11 +1540,13 @@ function updateRoomUrl(newRoomUrl) {
  * Warning to the user that the conference window is about to be closed.
  */
 function closePageWarning() {
+    /*
+    FIXME: do we need a warning when the focus is a server-side one now ?
     if (focus !== null)
         return "You are the owner of this conference call and"
                 + " you are about to end it.";
-    else
-        return "You are about to leave this conversation.";
+    else*/
+    return "You are about to leave this conversation.";
 }
 
 /**
@@ -1545,6 +1583,13 @@ function setView(viewName) {
 //    }
 }
 
+$(document).bind('error.jingle',
+    function (event, session, error)
+    {
+        console.error("Jingle error", error);
+    }
+);
+
 $(document).bind('fatalError.jingle',
     function (event, session, error)
     {
@@ -1566,7 +1611,7 @@ function onSelectedEndpointChanged(userJid)
                 dataChannel.send(JSON.stringify({
                     'colibriClass': 'SelectedEndpointChangedEvent',
                     'selectedEndpoint': (!userJid || userJid == null)
-                        ? null : Strophe.getResourceFromJid(userJid)
+                        ? null : userJid
                 }));
 
                 return true;
@@ -1661,3 +1706,14 @@ function hangup() {
     );
 
 }
+
+$(document).on('videomuted.muc', function(event, jid, value) {
+    if(mediaStreams[jid] && mediaStreams[jid][MediaStream.VIDEO_TYPE]) {
+        var stream = mediaStreams[jid][MediaStream.VIDEO_TYPE];
+        var isMuted = (value === "true");
+        if (isMuted != stream.muted) {
+            stream.muted = isMuted;
+            Avatar.showUserAvatar(jid, isMuted);
+        }
+    }
+});

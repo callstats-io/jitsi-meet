@@ -42,6 +42,7 @@ function TraceablePeerConnection(ice_config, constraints) {
     };
     this.onicecandidate = null;
     this.peerconnection.onicecandidate = function (event) {
+        // on new ice candidate
         self.trace('onicecandidate', JSON.stringify(event.candidate, null, ' '));
         if (self.onicecandidate !== null) {
             self.onicecandidate(event);
@@ -63,6 +64,7 @@ function TraceablePeerConnection(ice_config, constraints) {
     };
     this.onsignalingstatechange = null;
     this.peerconnection.onsignalingstatechange = function (event) {
+        // on signalling state
         self.trace('onsignalingstatechange', self.signalingState);
         if (self.onsignalingstatechange !== null) {
             self.onsignalingstatechange(event);
@@ -70,6 +72,7 @@ function TraceablePeerConnection(ice_config, constraints) {
     };
     this.oniceconnectionstatechange = null;
     this.peerconnection.oniceconnectionstatechange = function (event) {
+        // on ice connection state change
         self.trace('oniceconnectionstatechange', self.iceConnectionState);
         if (self.oniceconnectionstatechange !== null) {
             self.oniceconnectionstatechange(event);
@@ -77,6 +80,7 @@ function TraceablePeerConnection(ice_config, constraints) {
     };
     this.onnegotiationneeded = null;
     this.peerconnection.onnegotiationneeded = function (event) {
+        // onNN
         self.trace('onnegotiationneeded');
         if (self.onnegotiationneeded !== null) {
             self.onnegotiationneeded(event);
@@ -141,12 +145,28 @@ if (TraceablePeerConnection.prototype.__defineGetter__ !== undefined) {
 TraceablePeerConnection.prototype.addStream = function (stream) {
     this.trace('addStream', stream.id);
     simulcast.resetSender();
-    this.peerconnection.addStream(stream);
+    try
+    {
+        this.peerconnection.addStream(stream);
+    }
+    catch (e)
+    {
+        console.error(e);
+        return;
+    }
 };
 
-TraceablePeerConnection.prototype.removeStream = function (stream) {
+TraceablePeerConnection.prototype.removeStream = function (stream, stopStreams) {
     this.trace('removeStream', stream.id);
     simulcast.resetSender();
+    if(stopStreams) {
+        stream.getAudioTracks().forEach(function (track) {
+            track.stop();
+        });
+        stream.getVideoTracks().forEach(function (track) {
+            track.stop();
+        });
+    }
     this.peerconnection.removeStream(stream);
 };
 
@@ -356,6 +376,15 @@ TraceablePeerConnection.prototype.modifySources = function(successCallback) {
     });
     this.removessrc = [];
 
+    // FIXME:
+    // this was a hack for the situation when only one peer exists
+    // in the conference.
+    // check if still required and remove
+    if (sdp.media[0])
+        sdp.media[0] = sdp.media[0].replace('a=recvonly', 'a=sendrecv');
+    if (sdp.media[1])
+        sdp.media[1] = sdp.media[1].replace('a=recvonly', 'a=sendrecv');
+
     sdp.raw = sdp.session + sdp.media.join('');
     this.setRemoteDescription(new RTCSessionDescription({type: 'offer', sdp: sdp.raw}),
         function() {
@@ -477,6 +506,11 @@ TraceablePeerConnection.prototype.addIceCandidate = function (candidate, success
 TraceablePeerConnection.prototype.getStats = function(callback, errback) {
     if (navigator.mozGetUserMedia) {
         // ignore for now...
+        if(!errback)
+            errback = function () {
+
+            }
+        this.peerconnection.getStats(null,callback,errback);
     } else {
         this.peerconnection.getStats(callback);
     }
@@ -497,7 +531,44 @@ function setupRTC() {
                     element[0].mozSrcObject = stream;
                     element[0].play();
                 },
-                pc_constraints: {}
+                pc_constraints: {},
+                getLocalSSRC: function (session, callback) {
+                    // NOTE(gp) latest FF nightlies seem to provide the local
+                    // SSRCs in their SDP so there's no longer necessary to
+                    // take it from the peer connection stats.
+                    /*session.peerconnection.getStats(function (s) {
+                            var ssrcs = {};
+                            s.forEach(function (item) {
+                                if (item.type == "outboundrtp" && !item.isRemote)
+                                {
+                                    ssrcs[item.id.split('_')[2]] = item.ssrc;
+                                }
+                            });
+                            session.localStreamsSSRC = {
+                                "audio": ssrcs.audio,//for stable 0
+                                "video": ssrcs.video// for stable 1
+                            };
+                            callback(session.localStreamsSSRC);
+                        },
+                        function () {
+                            callback(null);
+                        });*/
+                    callback(null);
+                },
+                getStreamID: function (stream) {
+                    var tracks = stream.getVideoTracks();
+                    if(!tracks || tracks.length == 0)
+                    {
+                        tracks = stream.getAudioTracks();
+                    }
+                    return tracks[0].id.replace(/[\{,\}]/g,"");
+                },
+                getVideoSrc: function (element) {
+                    return element.mozSrcObject;
+                },
+                setVideoSrc: function (element, src) {
+                    element.mozSrcObject = src;
+                }
             };
             if (!MediaStream.prototype.getVideoTracks)
                 MediaStream.prototype.getVideoTracks = function () { return []; };
@@ -516,7 +587,21 @@ function setupRTC() {
                 element.attr('src', webkitURL.createObjectURL(stream));
             },
             // DTLS should now be enabled by default but..
-            pc_constraints: {'optional': [{'DtlsSrtpKeyAgreement': 'true'}]}
+            pc_constraints: {'optional': [{'DtlsSrtpKeyAgreement': 'true'}]},
+            getLocalSSRC: function (session, callback) {
+                callback(null);
+            },
+            getStreamID: function (stream) {
+                // streams from FF endpoints have the characters '{' and '}'
+                // that make jQuery choke.
+                return stream.id.replace(/[\{,\}]/g,"");
+            },
+            getVideoSrc: function (element) {
+                return element.getAttribute("src");
+            },
+            setVideoSrc: function (element, src) {
+                element.setAttribute("src", src);
+            }
         };
         if (navigator.userAgent.indexOf('Android') != -1) {
             RTC.pc_constraints = {}; // disable DTLS on Android

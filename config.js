@@ -5,6 +5,7 @@ var config = {
         muc: 'conference.fazer.dialogue.io', // FIXME: use XEP-0030
         bridge: 'jitsi-videobridge.fazer.dialogue.io', // FIXME: use XEP-0030
         //call_control: 'callcontrol.jitsi-meet.example.com'
+        //focus: 'focus.jitsi-meet.example.com' - defaults to 'focus.jitsi-meet.example.com'
     },
 //  getroomnode: function (path) { return 'someprefixpossiblybasedonpath'; },
 //  useStunTurn: true, // use XEP-0215 to fetch STUN and TURN server
@@ -12,6 +13,9 @@ var config = {
     useNicks: false,
     bosh: '//fazer.dialogue.io/http-bind', // FIXME: use xep-0156 for that
     clientNode: 'http://jitsi.org/jitsimeet?via=callstats.io', // The name of client node advertised in XEP-0115 'c' stanza
+    bosh: '//jitsi-meet.example.com/http-bind', // FIXME: use xep-0156 for that
+    clientNode: 'http://jitsi.org/jitsimeet', // The name of client node advertised in XEP-0115 'c' stanza
+    //focusUserJid: 'focus@auth.jitsi-meet.example.com', // The real JID of focus participant - can be overridden here
     //defaultSipNumber: '', // Default SIP number
     desktopSharing: 'false', // Desktop sharing method. Can be set to 'ext', 'webrtc' or false to disable.
     //chromeExtensionId: 'diibjkoicjeejcmhdnailmkgecihlobk', // Id of desktop streamer Chrome extension
@@ -26,5 +30,8 @@ var config = {
     useBundle: true,
     enableRecording: false,
     enableWelcomePage: true,
-    enableSimulcast: false
+    enableSimulcast: false,
+    enableFirefoxSupport: false, //firefox support is still experimental, only one-to-one conferences with chrome focus
+    // will work when simulcast, bundle, mux, lastN and SCTP are disabled.
+    logStats: false // Enable logging of PeerConnection stats via the focus
 };
